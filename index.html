@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Underwater Rugby</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a12;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas { display: block; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: center;
+            gap: 60px;
+            color: #0ff;
+            font-size: 32px;
+            text-shadow: 0 0 10px #0ff, 0 0 20px #0ff;
+            pointer-events: none;
+        }
+        #energy-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 20px;
+            background: rgba(0, 255, 255, 0.2);
+            border: 2px solid #0ff;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #energy-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #0ff, #0f0);
+            width: 100%;
+            transition: width 0.1s;
+        }
+        #controls-hint {
+            position: absolute;
+            bottom: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #0ff;
+            font-size: 14px;
+            text-shadow: 0 0 5px #0ff;
+            text-align: center;
+        }
+        #player-indicator {
+            position: absolute;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ff0;
+            font-size: 18px;
+            text-shadow: 0 0 10px #ff0;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui">
+            <div id="score-a">CYAN: 0</div>
+            <div id="score-b">MAGENTA: 0</div>
+        </div>
+        <div id="player-indicator">Controlling: Player 1</div>
+        <div id="energy-bar"><div id="energy-fill"></div></div>
+        <div id="controls-hint">WASD: Move | U: Up | I: Down | TAB: Switch Player | SPACE: Sprint</div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+// Game constants
+const FIELD_RADIUS = 15;
+const GOAL_WIDTH = 6;
+const GOAL_DEPTH = 3;
+const BALL_RADIUS = 0.5;
+const PLAYER_RADIUS = 0.8;
+const TEAM_A_COLOR = 0x00ffff;
+const TEAM_B_COLOR = 0xff00ff;
+
+// Game state
+let scoreA = 0;
+let scoreB = 0;
+let gameRunning = true;
+let controlledPlayerIndex = 0;
+
+// Energy system
+let energy = 100;
+const MAX_ENERGY = 100;
+const ENERGY_DRAIN = 30; // per second while sprinting
+const ENERGY_REGEN = 15; // per second while not sprinting
+
+// Three.js components
+let scene, camera, renderer;
+let ball, players = [];
+let playerBodies = []; // Physics representations
+
+// Input state
+const keys = {};
+
+        document.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            if (e.code === 'Tab') e.preventDefault();
+        });
+        document.addEventListener('keyup', e => keys[e.code] = false);
+
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a12);
+            scene.fog = new THREE.Fog(0x0a0a12, 20, 50);
+
+            // Camera (isometric view)
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(20, 25, 20);
+            camera.lookAt(0, 0, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('game-container').appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+            scene.add(ambientLight);
+
+            const pointLight1 = new THREE.PointLight(0x00ffff, 1, 50);
+            pointLight1.position.set(-10, 10, -10);
+            scene.add(pointLight1);
+
+            const pointLight2 = new THREE.PointLight(0xff00ff, 1, 50);
+            pointLight2.position.set(10, 10, 10);
+            scene.add(pointLight2);
+
+            // Create field (hexagonal)
+            createField();
+
+            // Create ball
+            createBall();
+
+            // Create players (3 per team)
+            createPlayers();
+
+            // Create particles (bubbles)
+            createBubbles();
+
+            // Handle resize
+            window.addEventListener('resize', onWindowResize);
+
+            // Start game loop
+            gameLoop();
+        }
+
+        function createField() {
+            // Hexagonal field boundary (glowing lines)
+            const hexShape = new THREE.Shape();
+            for (let i = 0; i < 6; i++) {
+                const angle = (i / 6) * Math.PI * 2 - Math.PI / 2;
+                const x = Math.cos(angle) * FIELD_RADIUS;
+                const z = Math.sin(angle) * FIELD_RADIUS;
+                if (i === 0) hexShape.moveTo(x, z);
+                else hexShape.lineTo(x, z);
+            }
+            hexShape.closePath();
+
+            const points = hexShape.getPoints();
+            const geometry = new THREE.BufferGeometry().setFromPoints(
+                points.map(p => new THREE.Vector3(p.x, 0, p.y))
+            );
+            const material = new THREE.LineBasicMaterial({
+                color: 0x00ffff,
+                linewidth: 2
+            });
+            const hexLine = new THREE.LineLoop(geometry, material);
+            hexLine.position.y = 0.1;
+            scene.add(hexLine);
+
+            // Goal areas (cyan team left, magenta team right)
+            const goalGeometry = new THREE.BoxGeometry(GOAL_WIDTH, 3, GOAL_DEPTH);
+            const cyanMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.3
+            });
+            const magentaMaterial = new THREE.MeshBasicMaterial({
+                color: 0xff00ff,
+                transparent: true,
+                opacity: 0.3
+            });
+
+            // Left goal (cyan)
+            const leftGoal = new THREE.Mesh(goalGeometry, cyanMaterial);
+            leftGoal.position.set(-FIELD_RADIUS - GOAL_DEPTH/2, 1.5, 0);
+            scene.add(leftGoal);
+
+            // Right goal (magenta)
+            const rightGoal = new THREE.Mesh(goalGeometry, magentaMaterial);
+            rightGoal.position.set(FIELD_RADIUS + GOAL_DEPTH/2, 1.5, 0);
+            scene.add(rightGoal);
+        }
+
+        function createBall() {
+            const geometry = new THREE.SphereGeometry(BALL_RADIUS, 16, 16);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                emissive: 0xffffff,
+                emissiveIntensity: 0.5
+            });
+            ball = new THREE.Mesh(geometry, material);
+            ball.position.set(0, 1, 0);
+            ball.userData.velocity = new THREE.Vector3();
+            scene.add(ball);
+
+            // Glow effect
+            const glowGeometry = new THREE.SphereGeometry(BALL_RADIUS * 1.5, 16, 16);
+            const glowMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.2
+            });
+            const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+            ball.add(glow);
+        }
+
+        function createPlayers() {
+            const positions = [
+                { team: 'A', x: -8, y: 1, z: 0 },    // Cyan team
+                { team: 'A', x: -4, y: 2, z: 3 },
+                { team: 'A', x: -4, y: 1, z: -3 },
+                { team: 'B', x: 8, y: 1, z: 0 },     // Magenta team
+                { team: 'B', x: 4, y: 2, z: 3 },
+                { team: 'B', x: 4, y: 1, z: -3 },
+            ];
+
+            positions.forEach((pos, i) => {
+                const color = pos.team === 'A' ? TEAM_A_COLOR : TEAM_B_COLOR;
+                const geometry = new THREE.SphereGeometry(PLAYER_RADIUS, 16, 16);
+                const material = new THREE.MeshBasicMaterial({ color });
+                const player = new THREE.Mesh(geometry, material);
+                player.position.set(pos.x, pos.y, pos.z);
+                player.userData = {
+                    team: pos.team,
+                    velocity: new THREE.Vector3(),
+                    controlled: i === 0
+                };
+                scene.add(player);
+                players.push(player);
+
+                // Glow ring for controlled player
+                const ringGeometry = new THREE.TorusGeometry(PLAYER_RADIUS * 1.3, 0.05, 8, 32);
+                const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+                const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                ring.rotation.x = Math.PI / 2;
+                ring.visible = i === 0;
+                player.add(ring);
+                player.userData.ring = ring;
+            });
+        }
+
+        function createBubbles() {
+            const bubbleGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+            const bubbleMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.5
+            });
+
+            for (let i = 0; i < 50; i++) {
+                const bubble = new THREE.Mesh(bubbleGeometry, bubbleMaterial.clone());
+                bubble.position.set(
+                    (Math.random() - 0.5) * FIELD_RADIUS * 2,
+                    Math.random() * 10,
+                    (Math.random() - 0.5) * FIELD_RADIUS * 2
+                );
+                bubble.userData.speed = 0.5 + Math.random() * 1;
+                bubble.userData.wobble = Math.random() * Math.PI * 2;
+                scene.add(bubble);
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Placeholder for gameLoop - will be implemented in Task 2
+        function gameLoop() {
+            requestAnimationFrame(gameLoop);
+            renderer.render(scene, camera);
+        }
+
+        // Start
+        init();
+    </script>
+</body>
+</html>
