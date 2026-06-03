@@ -106,6 +106,12 @@ const MAX_ENERGY = 100;
 const ENERGY_DRAIN = 30; // per second while sprinting
 const ENERGY_REGEN = 15; // per second while not sprinting
 
+// Movement constants
+const PLAYER_SPEED = 5;
+const SPRINT_MULTIPLIER = 2;
+const VERTICAL_SPEED = 3;
+const UNDERWATER_DRAG = 0.95;
+
 // Three.js components
 let scene, camera, renderer;
 let ball, players = [];
@@ -302,9 +308,184 @@ const keys = {};
         }
 
         // Placeholder for gameLoop - will be implemented in Task 2
-        function gameLoop() {
-            requestAnimationFrame(gameLoop);
+        let lastTime = 0;
+        function gameLoop(time = 0) {
+            const deltaTime = Math.min((time - lastTime) / 1000, 0.1);
+            lastTime = time;
+
+            if (gameRunning) {
+                handleInput(deltaTime);
+                updatePhysics(deltaTime);
+                updateAI(deltaTime);
+                updateBubbles(deltaTime);
+                checkGoals();
+            }
+
+            updateUI();
             renderer.render(scene, camera);
+            requestAnimationFrame(gameLoop);
+        }
+
+        function handleInput(dt) {
+            const player = players[controlledPlayerIndex];
+            if (!player) return;
+
+            // Tab - player switching (only on keydown, not hold)
+            if (keys['Tab'] && !keys['TabUsed']) {
+                keys['TabUsed'] = true;
+                // Cycle through own team players
+                const team = controlledPlayerIndex < 3 ? 'A' : 'B';
+                const startIndex = team === 'A' ? 0 : 3;
+                controlledPlayerIndex = startIndex + ((controlledPlayerIndex - startIndex + 1) % 3);
+
+                // Update ring visibility
+                players.forEach((p, i) => {
+                    if (p.userData.ring) p.userData.ring.visible = (i === controlledPlayerIndex);
+                });
+            }
+            if (!keys['Tab']) {
+                keys['TabUsed'] = false;
+            }
+
+            let moveX = 0, moveY = 0, moveZ = 0;
+
+            // WASD - horizontal movement
+            if (keys['KeyW'] || keys['ArrowUp']) moveZ = -1;
+            if (keys['KeyS'] || keys['ArrowDown']) moveZ = 1;
+            if (keys['KeyA'] || keys['ArrowLeft']) moveX = -1;
+            if (keys['KeyD'] || keys['ArrowRight']) moveX = 1;
+
+            // UI - vertical movement
+            if (keys['KeyU']) moveY = 1;
+            if (keys['KeyI']) moveY = -1;
+
+            // Normalize diagonal movement
+            if (moveX !== 0 && moveZ !== 0) {
+                moveX *= 0.707;
+                moveZ *= 0.707;
+            }
+
+            // Apply speed
+            let speed = PLAYER_SPEED;
+            if (keys['Space'] && energy > 0 && !keys['SpaceUsed']) {
+                speed *= SPRINT_MULTIPLIER;
+                energy -= ENERGY_DRAIN * dt;
+                energy = Math.max(0, energy);
+                keys['SpaceUsed'] = true;
+            }
+            if (!keys['Space']) {
+                keys['SpaceUsed'] = false;
+            }
+            if (!keys['Space'] || energy <= 0) {
+                energy += ENERGY_REGEN * dt;
+                energy = Math.min(MAX_ENERGY, energy);
+            }
+
+            player.position.x += moveX * speed * dt;
+            player.position.y += moveY * VERTICAL_SPEED * dt;
+            player.position.z += moveZ * speed * dt;
+
+            // Keep player in bounds (hexagonal)
+            clampToField(player.position);
+
+            // Update glow ring rotation
+            if (player.userData.ring) {
+                player.userData.ring.visible = true;
+                player.userData.ring.rotation.z += dt * 2;
+            }
+        }
+
+        function clampToField(pos) {
+            const maxR = FIELD_RADIUS - PLAYER_RADIUS;
+            const dist = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+            if (dist > maxR) {
+                const scale = maxR / dist;
+                pos.x *= scale;
+                pos.z *= scale;
+            }
+            pos.y = Math.max(0.5, Math.min(8, pos.y));
+        }
+
+        function updatePhysics(dt) {
+            // Ball physics
+            if (ball.userData.velocity.length() > 0.01) {
+                ball.position.add(ball.userData.velocity.clone().multiplyScalar(dt));
+                ball.userData.velocity.multiplyScalar(UNDERWATER_DRAG);
+
+                // Ball collision with players
+                players.forEach(p => {
+                    const dist = ball.position.distanceTo(p.position);
+                    if (dist < BALL_RADIUS + PLAYER_RADIUS) {
+                        const normal = ball.position.clone().sub(p.position).normalize();
+                        ball.userData.velocity.add(normal.multiplyScalar(3));
+                    }
+                });
+
+                // Ball bounds
+                clampToField(ball.position);
+            }
+        }
+
+        function updateBubbles(dt) {
+            scene.children.forEach(child => {
+                if (child.userData && child.userData.speed) {
+                    child.position.y += child.userData.speed * dt;
+                    child.userData.wobble += dt;
+                    child.position.x += Math.sin(child.userData.wobble) * 0.02;
+                    if (child.position.y > 15) {
+                        child.position.y = 0;
+                    }
+                }
+            });
+        }
+
+        function checkGoals() {
+            // Left goal (cyan scores)
+            if (ball.position.x < -FIELD_RADIUS - GOAL_DEPTH/2 &&
+                Math.abs(ball.position.z) < GOAL_WIDTH/2 &&
+                ball.position.y < 3) {
+                scoreA++;
+                resetPositions();
+            }
+            // Right goal (magenta scores)
+            if (ball.position.x > FIELD_RADIUS + GOAL_DEPTH/2 &&
+                Math.abs(ball.position.z) < GOAL_WIDTH/2 &&
+                ball.position.y < 3) {
+                scoreB++;
+                resetPositions();
+            }
+
+            if (scoreA >= 5 || scoreB >= 5) {
+                gameRunning = false;
+                const winner = scoreA >= 5 ? 'CYAN' : 'MAGENTA';
+                alert(winner + ' WINS!');
+            }
+        }
+
+        function resetPositions() {
+            ball.position.set(0, 1, 0);
+            ball.userData.velocity.set(0, 0, 0);
+
+            players[0].position.set(-8, 1, 0);
+            players[1].position.set(-4, 2, 3);
+            players[2].position.set(-4, 1, -3);
+            players[3].position.set(8, 1, 0);
+            players[4].position.set(4, 2, 3);
+            players[5].position.set(4, 1, -3);
+        }
+
+        function updateUI() {
+            document.getElementById('score-a').textContent = 'CYAN: ' + scoreA;
+            document.getElementById('score-b').textContent = 'MAGENTA: ' + scoreB;
+            document.getElementById('energy-fill').style.width = energy + '%';
+            document.getElementById('player-indicator').textContent =
+                'Controlling: P' + (controlledPlayerIndex + 1) + ' (' +
+                (controlledPlayerIndex < 3 ? 'CYAN' : 'MAGENTA') + ')';
+        }
+
+        // Placeholder for AI - will be implemented in Task 3
+        function updateAI(dt) {
+            // AI not implemented yet - players just sit there
         }
 
         // Start
