@@ -539,23 +539,59 @@ const keys = {};
 
         function updatePhysics(dt) {
             let collided = false;
+
             // Ball collision with players
             players.forEach(p => {
                 const dist = ball.position.distanceTo(p.position);
-                if (dist < BALL_RADIUS + PLAYER_RADIUS && ball.userData.velocity.length() > 0.5) {
+                const minDist = BALL_RADIUS + PLAYER_RADIUS;
+                if (dist < minDist) {
                     collided = true;
+                    // Separate ball from player
                     const normal = ball.position.clone().sub(p.position).normalize();
-                    ball.userData.velocity.add(normal.multiplyScalar(3));
+                    const overlap = minDist - dist;
+                    ball.position.add(normal.clone().multiplyScalar(overlap + 0.1));
+
+                    // Bounce with velocity transfer
+                    const relVel = ball.userData.velocity.clone();
+                    const speed = Math.max(relVel.length(), 3);
+                    ball.userData.velocity.copy(normal.multiplyScalar(speed));
                 }
             });
             if (collided) playCollisionSound();
+
+            // Player-player collision
+            for (let i = 0; i < players.length; i++) {
+                for (let j = i + 1; j < players.length; j++) {
+                    const p1 = players[i];
+                    const p2 = players[j];
+                    const dist = p1.position.distanceTo(p2.position);
+                    const minDist = PLAYER_RADIUS * 2;
+                    if (dist < minDist && dist > 0) {
+                        const normal = p2.position.clone().sub(p1.position).normalize();
+                        const overlap = minDist - dist;
+                        // Push both apart equally
+                        p1.position.sub(normal.clone().multiplyScalar(overlap / 2));
+                        p2.position.add(normal.clone().multiplyScalar(overlap / 2));
+                    }
+                }
+            }
+
             // Ball physics
             if (ball.userData.velocity.length() > 0.01) {
                 ball.position.add(ball.userData.velocity.clone().multiplyScalar(dt));
                 ball.userData.velocity.multiplyScalar(UNDERWATER_DRAG);
 
-                // Ball bounds
-                clampToField(ball.position);
+                // Ball bounds (hexagonal)
+                const maxR = FIELD_RADIUS - BALL_RADIUS;
+                const ballDist = Math.sqrt(ball.position.x * ball.position.x + ball.position.z * ball.position.z);
+                if (ballDist > maxR) {
+                    const scale = maxR / ballDist;
+                    ball.position.x *= scale;
+                    ball.position.z *= scale;
+                    // Bounce off wall
+                    const normal = new THREE.Vector3(-ball.position.x, 0, -ball.position.z).normalize();
+                    ball.userData.velocity.reflect(normal);
+                }
 
                 // Update ball trail
                 if (ball.userData.velocity.length() > 0.5) {
