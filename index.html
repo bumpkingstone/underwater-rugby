@@ -513,15 +513,27 @@ const keys = {};
 
             let moveX = 0, moveY = 0, moveZ = 0;
 
-            // WASD - horizontal movement
-            if (keys['KeyW'] || keys['ArrowUp']) moveZ = -1;
-            if (keys['KeyS'] || keys['ArrowDown']) moveZ = 1;
-            if (keys['KeyA'] || keys['ArrowLeft']) moveX = -1;
-            if (keys['KeyD'] || keys['ArrowRight']) moveX = 1;
+            // WASD - horizontal movement (camera-relative)
+            let inputX = 0, inputZ = 0;
+            if (keys['KeyW'] || keys['ArrowUp']) inputZ = -1;
+            if (keys['KeyS'] || keys['ArrowDown']) inputZ = 1;
+            if (keys['KeyA'] || keys['ArrowLeft']) inputX = -1;
+            if (keys['KeyD'] || keys['ArrowRight']) inputX = 1;
 
             // UI - vertical movement
             if (keys['KeyU']) moveY = 1;
             if (keys['KeyI']) moveY = -1;
+
+            // Rotate input by camera angle to make controls camera-relative
+            if (inputX !== 0 || inputZ !== 0) {
+                // Get camera horizontal angle
+                const camAngle = Math.atan2(camera.position.x - player.position.x,
+                                             camera.position.z - player.position.z);
+                const rotatedX = inputX * Math.cos(camAngle) - inputZ * Math.sin(camAngle);
+                const rotatedZ = inputX * Math.sin(camAngle) + inputZ * Math.cos(camAngle);
+                moveX = rotatedX;
+                moveZ = rotatedZ;
+            }
 
             // Normalize diagonal movement
             if (moveX !== 0 && moveZ !== 0) {
