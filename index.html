@@ -115,6 +115,7 @@ const UNDERWATER_DRAG = 0.95;
 // Audio system
 let audioContext;
 let bgMusicGain, sfxGain;
+let playerVelocity = new THREE.Vector3(); // Track controlled player's movement direction
 
 function initAudio() {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -448,14 +449,41 @@ const keys = {};
                 checkGoals();
             }
 
-            // Camera follows controlled player smoothly
-            const targetCamPos = new THREE.Vector3(
-                players[controlledPlayerIndex].position.x + 15,
-                20,
-                players[controlledPlayerIndex].position.z + 15
-            );
-            camera.position.lerp(targetCamPos, deltaTime * 2);
-            camera.lookAt(players[controlledPlayerIndex].position);
+            // Camera follows controlled player in movement direction
+            const player = players[controlledPlayerIndex];
+            if (player) {
+                // Calculate camera offset based on movement direction
+                // Camera stays behind player in the direction they're moving
+                let camOffsetX = 15;
+                let camOffsetZ = 15;
+                let camOffsetY = 20;
+
+                if (playerVelocity.length() > 0.1) {
+                    // Camera offset is opposite to movement direction
+                    const backDist = 18;
+                    const sideDist = 8;
+                    const upDist = 15;
+
+                    // Camera position = player pos + offset opposite to movement
+                    camOffsetX = -playerVelocity.x * backDist + playerVelocity.z * sideDist;
+                    camOffsetZ = -playerVelocity.z * backDist - playerVelocity.x * sideDist;
+                    camOffsetY = upDist;
+                }
+
+                const targetCamPos = new THREE.Vector3(
+                    player.position.x + camOffsetX,
+                    player.position.y + camOffsetY,
+                    player.position.z + camOffsetZ
+                );
+                camera.position.lerp(targetCamPos, deltaTime * 3);
+
+                // Look slightly ahead of player
+                const lookTarget = player.position.clone();
+                lookTarget.x += playerVelocity.x * 3;
+                lookTarget.y += playerVelocity.y * 2;
+                lookTarget.z += playerVelocity.z * 3;
+                camera.lookAt(lookTarget);
+            }
 
             updateUI();
             renderer.render(scene, camera);
@@ -522,6 +550,11 @@ const keys = {};
             player.position.y += moveY * VERTICAL_SPEED * dt;
             player.position.z += moveZ * speed * dt;
 
+            // Track movement direction for camera
+            if (moveX !== 0 || moveY !== 0 || moveZ !== 0) {
+                playerVelocity.set(moveX, moveY, moveZ).normalize();
+            }
+
             // Keep player in bounds (hexagonal)
             clampToField(player.position);
         }
@@ -542,65 +575,96 @@ const keys = {};
 
             // Ball collision with players
             players.forEach(p => {
-                const dist = ball.position.distanceTo(p.position);
+                const dx = ball.position.x - p.position.x;
+                const dy = ball.position.y - p.position.y;
+                const dz = ball.position.z - p.position.z;
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
                 const minDist = BALL_RADIUS + PLAYER_RADIUS;
-                if (dist < minDist) {
+                if (dist < minDist && dist > 0.001) {
                     collided = true;
-                    // Separate ball from player
-                    const normal = ball.position.clone().sub(p.position).normalize();
-                    const overlap = minDist - dist;
-                    ball.position.add(normal.clone().multiplyScalar(overlap + 0.1));
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const nz = dz / dist;
 
-                    // Bounce with velocity transfer
-                    const relVel = ball.userData.velocity.clone();
-                    const speed = Math.max(relVel.length(), 3);
-                    ball.userData.velocity.copy(normal.multiplyScalar(speed));
+                    const overlap = minDist - dist;
+                    ball.position.x += nx * (overlap + 0.5);
+                    ball.position.y += ny * (overlap + 0.5);
+                    ball.position.z += nz * (overlap + 0.5);
+
+                    const speed = Math.max(ball.userData.velocity.length(), 3);
+                    ball.userData.velocity.set(nx * speed, ny * speed, nz * speed);
                 }
             });
             if (collided) playCollisionSound();
 
             // Player-player collision
-            for (let i = 0; i < players.length; i++) {
-                for (let j = i + 1; j < players.length; j++) {
-                    const p1 = players[i];
-                    const p2 = players[j];
-                    const dist = p1.position.distanceTo(p2.position);
-                    const minDist = PLAYER_RADIUS * 2;
-                    if (dist < minDist && dist > 0) {
-                        const normal = p2.position.clone().sub(p1.position).normalize();
-                        const overlap = minDist - dist;
-                        // Push both apart equally
-                        p1.position.sub(normal.clone().multiplyScalar(overlap / 2));
-                        p2.position.add(normal.clone().multiplyScalar(overlap / 2));
+            for (let iter = 0; iter < 3; iter++) {
+                for (let i = 0; i < players.length; i++) {
+                    for (let j = i + 1; j < players.length; j++) {
+                        const p1 = players[i];
+                        const p2 = players[j];
+
+                        const dx = p2.position.x - p1.position.x;
+                        const dy = p2.position.y - p1.position.y;
+                        const dz = p2.position.z - p1.position.z;
+                        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                        const minDist = PLAYER_RADIUS * 2;
+                        if (dist < minDist && dist > 0.001) {
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+                            const nz = dz / dist;
+                            const overlap = minDist - dist;
+
+                            const push = overlap * 1.0;
+                            p1.position.x -= nx * push;
+                            p1.position.y -= ny * push;
+                            p1.position.z -= nz * push;
+                            p2.position.x += nx * push;
+                            p2.position.y += ny * push;
+                            p2.position.z += nz * push;
+                        }
                     }
                 }
             }
 
             // Ball physics
             if (ball.userData.velocity.length() > 0.01) {
-                ball.position.add(ball.userData.velocity.clone().multiplyScalar(dt));
+                ball.position.x += ball.userData.velocity.x * dt;
+                ball.position.y += ball.userData.velocity.y * dt;
+                ball.position.z += ball.userData.velocity.z * dt;
                 ball.userData.velocity.multiplyScalar(UNDERWATER_DRAG);
 
-                // Ball bounds (hexagonal)
+                // Ball bounds (hexagonal) - bounce instead of clamp
                 const maxR = FIELD_RADIUS - BALL_RADIUS;
-                const ballDist = Math.sqrt(ball.position.x * ball.position.x + ball.position.z * ball.position.z);
-                if (ballDist > maxR) {
-                    const scale = maxR / ballDist;
+                const ballDistXZ = Math.sqrt(ball.position.x * ball.position.x + ball.position.z * ball.position.z);
+                if (ballDistXZ > maxR) {
+                    // Push back inside
+                    const scale = maxR / ballDistXZ;
                     ball.position.x *= scale;
                     ball.position.z *= scale;
-                    // Bounce off wall
-                    const normal = new THREE.Vector3(-ball.position.x, 0, -ball.position.z).normalize();
-                    ball.userData.velocity.reflect(normal);
+                    // Reflect velocity
+                    const dot = ball.userData.velocity.x * (-ball.position.x/maxR) +
+                               ball.userData.velocity.z * (-ball.position.z/maxR);
+                    ball.userData.velocity.x -= 2 * dot * (-ball.position.x/maxR);
+                    ball.userData.velocity.z -= 2 * dot * (-ball.position.z/maxR);
+                    ball.userData.velocity.multiplyScalar(0.8);
+                }
+
+                // Ball Y bounds (keep in play area)
+                ball.position.y = Math.max(BALL_RADIUS, Math.min(8 - BALL_RADIUS, ball.position.y));
+                if (ball.position.y <= BALL_RADIUS || ball.position.y >= 8 - BALL_RADIUS) {
+                    ball.userData.velocity.y *= -0.8;
                 }
 
                 // Update ball trail
-                if (ball.userData.velocity.length() > 0.5) {
+                const speed = ball.userData.velocity.length();
+                if (speed > 0.5) {
                     ball.userData.trail.forEach((t, i) => {
                         t.visible = true;
-                        const trailPos = ball.position.clone().sub(
-                            ball.userData.velocity.clone().normalize().multiplyScalar(i * 0.3)
-                        );
-                        t.position.lerp(trailPos, 0.5);
+                        const trailDist = i * 0.3;
+                        t.position.x = ball.position.x - ball.userData.velocity.x / speed * trailDist;
+                        t.position.y = ball.position.y - ball.userData.velocity.y / speed * trailDist;
+                        t.position.z = ball.position.z - ball.userData.velocity.z / speed * trailDist;
                     });
                 } else {
                     ball.userData.trail.forEach(t => t.visible = false);
